@@ -1,16 +1,19 @@
 import argparse
 parser = argparse.ArgumentParser(description="PyTorch implementation of Temporal Segment Networks")
-parser.add_argument('dataset', type=str, choices=['something','jester','moments'])
+parser.add_argument('dataset', type=str)
 parser.add_argument('modality', type=str, choices=['RGB', 'Flow'])
+parser.add_argument('--num_class', type=int, default=11, help='num class')
 parser.add_argument('--train_list', type=str,default="")
 parser.add_argument('--val_list', type=str, default="")
 parser.add_argument('--root_path', type=str, default="")
 parser.add_argument('--store_name', type=str, default="")
+parser.add_argument('--reverse', default=True, action="store_true", help='reverse rgb image')
 # ========================= Model Configs ==========================
 parser.add_argument('--arch', type=str, default="BNInception")
 parser.add_argument('--num_segments', type=int, default=3)
 parser.add_argument('--consensus_type', type=str, default='avg')
 parser.add_argument('--k', type=int, default=3)
+parser.add_argument('--pretrained', type=str, help='pre-trained model from other data-set')
 
 parser.add_argument('--dropout', '--do', default=0.8, type=float,
                     metavar='DO', help='dropout ratio (default: 0.5)')

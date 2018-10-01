@@ -2,7 +2,7 @@ from torch import nn
 
 from ops.basic_ops import ConsensusModule, Identity
 from transforms import *
-from torch.nn.init import normal, constant
+from torch.nn.init import normal_, constant_
 
 import TRNmodule
 
@@ -81,16 +81,16 @@ class TSN(nn.Module):
 
         std = 0.001
         if self.new_fc is None:
-            normal(getattr(self.base_model, self.base_model.last_layer_name).weight, 0, std)
-            constant(getattr(self.base_model, self.base_model.last_layer_name).bias, 0)
+            normal_(getattr(self.base_model, self.base_model.last_layer_name).weight, 0, std)
+            constant_(getattr(self.base_model, self.base_model.last_layer_name).bias, 0)
         else:
-            normal(self.new_fc.weight, 0, std)
-            constant(self.new_fc.bias, 0)
+            normal_(self.new_fc.weight, 0, std)
+            constant_(self.new_fc.bias, 0)
         return feature_dim
 
     def _prepare_base_model(self, base_model):
 
-        if 'resnet' in base_model or 'vgg' in base_model:
+        if 'resnet' in base_model and 'inception' not in base_model or 'vgg' in base_model:
             self.base_model = getattr(torchvision.models, base_model)(True)
             self.base_model.last_layer_name = 'fc'
             self.input_size = 224
@@ -129,7 +129,7 @@ class TSN(nn.Module):
 
         elif 'inception' in base_model:
             import model_zoo
-            self.base_model = getattr(model_zoo, base_model)()
+            self.base_model = getattr(model_zoo, base_model)(pretrained=False)
             self.base_model.last_layer_name = 'classif'
             self.input_size = 299
             self.input_mean = [0.5]

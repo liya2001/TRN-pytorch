@@ -7,12 +7,13 @@ import torchvision
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim
-from torch.nn.utils import clip_grad_norm
+from torch.nn.utils import clip_grad_norm_
 
-from dataset import TSNDataSet
+from dataset_virat import TSNDataSet
 from models import TSN
 from transforms import *
 from opts import parser
+from network import load_pretrain
 import datasets_video
 
 
@@ -21,11 +22,13 @@ best_prec1 = 0
 def main():
     global args, best_prec1
     args = parser.parse_args()
+    print(args)
     check_rootfolders()
 
-    categories, args.train_list, args.val_list, args.root_path, prefix = datasets_video.return_dataset(args.dataset, args.modality)
-    num_class = len(categories)
-
+    # categories, args.train_list, args.val_list, args.root_path, prefix = datasets_video.return_dataset(args.dataset, args.modality)
+    # num_class = len(categories)
+    num_class = args.num_class
+    prefix = ''
 
     args.store_name = '_'.join(['TRN', args.dataset, args.modality, args.arch, args.consensus_type, 'segment%d'% args.num_segments])
     print('storing name: ' + args.store_name)
@@ -36,6 +39,17 @@ def main():
                 dropout=args.dropout,
                 img_feature_dim=args.img_feature_dim,
                 partial_bn=not args.no_partialbn)
+    print(model)
+
+    if args.pretrained:
+        load_pretrain(model, args.pretrained)
+
+    param_count = 0
+    for n, param in model.named_parameters():
+        param_count += 1
+        # if len(n) > 21 and n[21] in args.freeze_layers:
+        #     param.requires_grad = False
+        print(param_count, n, param.requires_grad, param.size())
 
     crop_size = model.crop_size
     scale_size = model.scale_size
@@ -81,7 +95,8 @@ def main():
                        Stack(roll=(args.arch in ['BNInception','InceptionV3'])),
                        ToTorchFormatTensor(div=(args.arch not in ['BNInception','InceptionV3'])),
                        normalize,
-                   ])),
+                   ]),
+                   reverse=args.reverse),
         batch_size=args.batch_size, shuffle=True,
         num_workers=args.workers, pin_memory=True)
 
@@ -147,7 +162,7 @@ def train(train_loader, model, criterion, optimizer, epoch, log):
     data_time = AverageMeter()
     losses = AverageMeter()
     top1 = AverageMeter()
-    top5 = AverageMeter()
+    top2 = AverageMeter()
 
     if args.no_partialbn:
         model.module.partialBN(False)
@@ -171,10 +186,10 @@ def train(train_loader, model, criterion, optimizer, epoch, log):
         loss = criterion(output, target_var)
 
         # measure accuracy and record loss
-        prec1, prec5 = accuracy(output.data, target, topk=(1,5))
-        losses.update(loss.data[0], input.size(0))
-        top1.update(prec1[0], input.size(0))
-        top5.update(prec5[0], input.size(0))
+        prec1, prec2 = accuracy(output.data, target, topk=(1, 2))
+        losses.update(loss.item(), input.size(0))
+        top1.update(prec1.item(), input.size(0))
+        top2.update(prec2.item(), input.size(0))
 
 
         # compute gradient and do SGD step
@@ -183,7 +198,7 @@ def train(train_loader, model, criterion, optimizer, epoch, log):
         loss.backward()
 
         if args.clip_gradient is not None:
-            total_norm = clip_grad_norm(model.parameters(), args.clip_gradient)
+            total_norm = clip_grad_norm_(model.parameters(), args.clip_gradient)
             if total_norm > args.clip_gradient:
                 print("clipping gradient: {} with coef {}".format(total_norm, args.clip_gradient / total_norm))
 
@@ -199,9 +214,9 @@ def train(train_loader, model, criterion, optimizer, epoch, log):
                     'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                     'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                     'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                    'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
+                    'Prec@2 {top2.val:.3f} ({top2.avg:.3f})'.format(
                         epoch, i, len(train_loader), batch_time=batch_time,
-                        data_time=data_time, loss=losses, top1=top1, top5=top5, lr=optimizer.param_groups[-1]['lr']))
+                        data_time=data_time, loss=losses, top1=top1, top2=top2, lr=optimizer.param_groups[-1]['lr']))
             print(output)
             log.write(output + '\n')
             log.flush()
@@ -212,46 +227,47 @@ def validate(val_loader, model, criterion, iter, log):
     batch_time = AverageMeter()
     losses = AverageMeter()
     top1 = AverageMeter()
-    top5 = AverageMeter()
+    top2 = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
 
     end = time.time()
-    for i, (input, target) in enumerate(val_loader):
-        target = target.cuda(async=True)
-        input_var = torch.autograd.Variable(input, volatile=True)
-        target_var = torch.autograd.Variable(target, volatile=True)
+    with torch.no_grad():
+        for i, (input, target) in enumerate(val_loader):
+            target = target.cuda(async=True)
+            input_var = torch.autograd.Variable(input)
+            target_var = torch.autograd.Variable(target)
 
-        # compute output
-        output = model(input_var)
-        loss = criterion(output, target_var)
+            # compute output
+            output = model(input_var)
+            loss = criterion(output, target_var)
 
-        # measure accuracy and record loss
-        prec1, prec5 = accuracy(output.data, target, topk=(1,5))
+            # measure accuracy and record loss
+            prec1, prec2 = accuracy(output.data, target, topk=(1, 2))
 
-        losses.update(loss.data[0], input.size(0))
-        top1.update(prec1[0], input.size(0))
-        top5.update(prec5[0], input.size(0))
+            losses.update(loss.data[0], input.size(0))
+            top1.update(prec1[0], input.size(0))
+            top2.update(prec2[0], input.size(0))
 
-        # measure elapsed time
-        batch_time.update(time.time() - end)
-        end = time.time()
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
 
-        if i % args.print_freq == 0:
-            output = ('Test: [{0}/{1}]\t'
-                  'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                  'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                  'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
-                  'Prec@5 {top5.val:.3f} ({top5.avg:.3f})'.format(
-                   i, len(val_loader), batch_time=batch_time, loss=losses,
-                   top1=top1, top5=top5))
-            print(output)
-            log.write(output + '\n')
-            log.flush()
+            if i % args.print_freq == 0:
+                output = ('Test: [{0}/{1}]\t'
+                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                      'Prec@1 {top1.val:.3f} ({top1.avg:.3f})\t'
+                      'Prec@5 {top2.val:.3f} ({top2.avg:.3f})'.format(
+                       i, len(val_loader), batch_time=batch_time, loss=losses,
+                       top1=top1, top2=top2))
+                print(output)
+                log.write(output + '\n')
+                log.flush()
 
-    output = ('Testing Results: Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Loss {loss.avg:.5f}'
-          .format(top1=top1, top5=top5, loss=losses))
+    output = ('Testing Results: Prec@1 {top1.avg:.3f} Prec@5 {top2.avg:.3f} Loss {loss.avg:.5f}'
+              .format(top1=top1, top2=top2, loss=losses))
     print(output)
     output_best = '\nBest Prec@1: %.3f'%(best_prec1)
     print(output_best)

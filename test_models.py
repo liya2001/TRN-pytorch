@@ -2,10 +2,11 @@ import argparse
 import time
 
 import numpy as np
+import pandas as pd
 import torch.nn.parallel
 import torch.optim
 from sklearn.metrics import confusion_matrix
-from dataset import TSNDataSet
+from dataset_virat import TSNDataSet
 from models import TSN
 from transforms import *
 from ops import ConsensusModule
@@ -17,10 +18,15 @@ from torch.nn import functional as F
 # options
 parser = argparse.ArgumentParser(
     description="TRN testing on the full validation set")
-parser.add_argument('dataset', type=str, choices=['something','jester','moments','charades'])
+parser.add_argument('dataset', type=str, help='data-set')
 parser.add_argument('modality', type=str, choices=['RGB', 'Flow', 'RGBDiff'])
 parser.add_argument('weights', type=str)
+# ToDo:
+parser.add_argument('--num_class', type=int, default=11, help='num class')
+parser.add_argument('--val_list', type=str, default="")
+parser.add_argument('--root_path', type=str, default="")
 parser.add_argument('--arch', type=str, default="resnet101")
+# ToDo:
 parser.add_argument('--save_scores', type=str, default=None)
 parser.add_argument('--test_segments', type=int, default=25)
 parser.add_argument('--max_num', type=int, default=-1)
@@ -36,6 +42,7 @@ parser.add_argument('--num_set_segments',type=int, default=1,help='TODO: select 
 parser.add_argument('--softmax', type=int, default=0)
 
 args = parser.parse_args()
+print(args)
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -68,9 +75,20 @@ def accuracy(output, target, topk=(1,)):
     return res
 
 
-
-categories, args.train_list, args.val_list, args.root_path, prefix = datasets_video.return_dataset(args.dataset, args.modality)
-num_class = len(categories)
+# categories, args.train_list, args.val_list, args.root_path, prefix = datasets_video.return_dataset(args.dataset, args.modality)
+categories = ['Opening',
+              'Closing',
+              'Entering',
+              'Exiting',
+              'Open_Trunk_car',
+              'Closing_Trunk_car',
+              'Open_Trunk_pickup',
+              'Closing_Trunk_pickup',
+              'Loading',
+              'Unloading',
+              'Interacts']
+num_class = args.num_class
+prefix = ''
 
 net = TSN(num_class, args.test_segments if args.crop_fusion_type in ['TRN','TRNmultiscale'] else 1, args.modality,
           base_model=args.arch,
@@ -161,7 +179,7 @@ proc_start_time = time.time()
 max_num = args.max_num if args.max_num > 0 else len(data_loader.dataset)
 
 top1 = AverageMeter()
-top5 = AverageMeter()
+top2 = AverageMeter()
 
 for i, (data, label) in data_gen:
     if i >= max_num:
@@ -169,12 +187,12 @@ for i, (data, label) in data_gen:
     rst = eval_video((i, data, label))
     output.append(rst[1:])
     cnt_time = time.time() - proc_start_time
-    prec1, prec5 = accuracy(torch.from_numpy(np.mean(rst[1], axis=0)), label, topk=(1, 5))
+    prec1, prec2 = accuracy(torch.from_numpy(np.mean(rst[1], axis=0)), label, topk=(1, 2))
     top1.update(prec1[0], 1)
-    top5.update(prec5[0], 1)
+    top2.update(prec2[0], 1)
     print('video {} done, total {}/{}, average {:.3f} sec/video, moving Prec@1 {:.3f} Prec@5 {:.3f}'.format(i, i+1,
                                                                     total_num,
-                                                                    float(cnt_time) / (i+1), top1.avg, top5.avg))
+                                                                    float(cnt_time) / (i+1), top1.avg, top2.avg))
 
 video_pred = [np.argmax(np.mean(x[0], axis=0)) for x in output]
 
@@ -186,31 +204,44 @@ cf = confusion_matrix(video_labels, video_pred).astype(float)
 cls_cnt = cf.sum(axis=1)
 cls_hit = np.diag(cf)
 
+print('cls_hit:', cls_hit)
+print('cls_cnt:', cls_cnt)
+
 cls_acc = cls_hit / cls_cnt
+print(cls_acc)
+
 
 print('-----Evaluation is finished------')
 print('Class Accuracy {:.02f}%'.format(np.mean(cls_acc) * 100))
-print('Overall Prec@1 {:.02f}% Prec@5 {:.02f}%'.format(top1.avg, top5.avg))
+print('Overall Prec@1 {:.02f}% Prec@5 {:.02f}%'.format(top1.avg, top2.avg))
 
 if args.save_scores is not None:
 
+    test_df = pd.read_csv(args.val_list, sep=' ', header=None)
+    test_df.columns = ['activity', 'length', 'label', 'offset', 'reverse', 'mapping']
+    test_df['activity'] = test_df['activity'].map(lambda v: '-'.join(v.split('/')[2:]))
+    test_df['pred'] = video_pred
+    test_df.to_csv(args.save_scores[:-4] + '_analysis.csv', index=False)
+
     # reorder before saving
-    name_list = [x.strip().split()[0] for x in open(args.val_list)]
-    order_dict = {e:i for i, e in enumerate(sorted(name_list))}
-    reorder_output = [None] * len(output)
-    reorder_label = [None] * len(output)
-    reorder_pred = [None] * len(output)
-    output_csv = []
-    for i in range(len(output)):
-        idx = order_dict[name_list[i]]
-        reorder_output[idx] = output[i]
-        reorder_label[idx] = video_labels[i]
-        reorder_pred[idx] = video_pred[i]
-        output_csv.append('%s;%s'%(name_list[i], categories[video_pred[i]]))
+    # name_list = [x.strip().split()[0] for x in open(args.val_list)]
+    # name_list = ['-'.join(x.strip().split()[0].split('/')[2:]) for x in open(args.val_list)]
+#
+    # order_dict = {e:i for i, e in enumerate(sorted(name_list))}
+    # reorder_output = [None] * len(output)
+    # reorder_label = [None] * len(output)
+    # reorder_pred = [None] * len(output)
+    # output_csv = []
+    # for i in range(len(output)):
+    #     idx = order_dict[name_list[i]]
+    #     reorder_output[idx] = output[i]
+    #     reorder_label[idx] = video_labels[i]
+    #     reorder_pred[idx] = video_pred[i]
+    #     output_csv.append('%s;%s'%(name_list[i], categories[video_pred[i]]))
 
-    np.savez(args.save_scores, scores=reorder_output, labels=reorder_label, predictions=reorder_pred, cf=cf)
+    np.savez(args.save_scores, scores=output, labels=video_labels, predictions=video_pred, cf=cf)
 
-    with open(args.save_scores.replace('npz','csv'),'w') as f:
-        f.write('\n'.join(output_csv))
+    # with open(args.save_scores.replace('npz','csv'),'w') as f:
+    #     f.write('\n'.join(output_csv))
 
 
